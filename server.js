@@ -39,7 +39,7 @@ app.get('/parse-recipe', async (req, res) => {
 });
 
 // ==========================================
-// YOUTUBE RECIPE PARSER
+// INTELLIGENT YOUTUBE RECIPE PARSER
 // ==========================================
 async function parseYouTubeRecipe(url) {
     const response = await axios.get(url, {
@@ -58,30 +58,38 @@ async function parseYouTubeRecipe(url) {
     
     let ingredients = [];
     let instructions = [];
-    let currentSection = 'general';
+    let currentSection = 'ingredients'; // Default assumption for video descriptions
 
     for (const line of lines) {
         const lower = String(line || '').toLowerCase();
-        if (lower.includes('ingredient') || lower.includes('you will need')) {
+        
+        // Detect section headers
+        if (lower.includes('ingredient') || lower.includes('what you need') || lower.includes('shopping')) {
             currentSection = 'ingredients';
             continue;
-        } else if (lower.includes('instruction') || lower.includes('directions') || lower.includes('method') || lower.includes('steps')) {
+        } else if (lower.includes('instruction') || lower.includes('direction') || lower.includes('method') || lower.includes('step') || lower.includes('how to')) {
             currentSection = 'instructions';
+            continue;
+        }
+
+        // Skip social media links or irrelevant promo text
+        if (lower.includes('http://') || lower.includes('https://') || lower.includes('instagram') || lower.includes('facebook') || lower.includes('subscribe')) {
             continue;
         }
 
         if (currentSection === 'ingredients') {
             ingredients.push({ amount: "", unit: "", name: line });
-        } else if (currentSection === 'instructions') {
+        } else {
             instructions.push(line);
         }
     }
 
+    // Fallback if no sections were cleanly separated
     if (ingredients.length === 0) {
-        ingredients = lines.slice(0, Math.min(lines.length, 10)).map(l => ({ amount: "", unit: "", name: l }));
+        ingredients = lines.slice(0, Math.min(lines.length, 8)).map(l => ({ amount: "", unit: "", name: l }));
     }
     if (instructions.length === 0) {
-        instructions = lines.slice(Math.min(lines.length, 10));
+        instructions = lines.slice(Math.min(lines.length, 8));
     }
 
     return {
@@ -92,14 +100,14 @@ async function parseYouTubeRecipe(url) {
         prepTime: "15 mins",
         cookTime: "20 mins",
         defaultServings: 4,
-        ingredients: ingredients.length > 0 ? ingredients : [{ amount: "", unit: "", name: "Check video description" }],
-        instructions: instructions.length > 0 ? instructions : ["Watch video for instructions"],
+        ingredients,
+        instructions,
         image
     };
 }
 
 // ==========================================
-// STANDARD WEBSITE RECIPE PARSER
+// INTELLIGENT WEB RECIPE PARSER
 // ==========================================
 async function parseStandardWebRecipe(url) {
     const response = await axios.get(url, {
@@ -111,46 +119,73 @@ async function parseStandardWebRecipe(url) {
     const $ = cheerio.load(response.data);
     
     const title = $('meta[property="og:title"]').attr('content') || $('title').text() || "Web Recipe";
-    const author = $('meta[name="author"]').attr('content') || "Blog Author";
+    const author = $('meta[name="author"]').attr('content') || $('[rel="author"]').text() || "Blog Author";
     const image = $('meta[property="og:image"]').attr('content') || "";
 
     let ingredients = [];
     
-    // Extract structured WPRM or microdata ingredients matching frontend expectations
-    $('[class*="ingredient"], [itemprop="recipeIngredient"], .wprm-recipe-ingredient').each((i, el) => {
-        const amount = $(el).find('.wprm-recipe-ingredient-amount').text().trim() || "";
-        const unit = $(el).find('.wprm-recipe-ingredient-unit').text().trim() || "";
-        const nameNode = $(el).find('.wprm-recipe-ingredient-name').text().trim();
-        const fullName = nameNode || $(el).text().trim();
+    // Comprehensive selectors targeting common recipe card plugins (WP Recipe Maker, Tasty Recipes, Recipe Card Blocks, etc.)
+    const ingredientSelectors = [
+        '.wprm-recipe-ingredient',
+        '.tasty-recipes-ingredients li',
+        '.saberecipe-ingredient',
+        '[itemprop="recipeIngredient"]',
+        'li.ingredient',
+        '.recipe-ingredients li'
+    ];
 
-        if (fullName) {
-            ingredients.push({
-                amount: amount,
-                unit: unit,
-                name: fullName
-            });
-        }
-    });
+    for (const selector of ingredientSelectors) {
+        $(selector).each((i, el) => {
+            const amount = $(el).find('.wprm-recipe-ingredient-amount, .tasty-recipes-ingredient-amount').text().trim() || "";
+            const unit = $(el).find('.wprm-recipe-ingredient-unit, .tasty-recipes-ingredient-unit').text().trim() || "";
+            const name = $(el).find('.wprm-recipe-ingredient-name, .tasty-recipes-ingredient-name').text().trim() || $(el).text().trim();
+
+            if (name && !ingredients.some(ing => ing.name === name)) {
+                ingredients.push({ amount, unit, name });
+            }
+        });
+        if (ingredients.length > 0) break;
+    }
+
+    // Generic fallback if specific plugin selectors missed items
+    if (ingredients.length === 0) {
+        $('ul li, ol li').each((i, el) => {
+            const text = $(el).text().trim();
+            if (text.length > 3 && text.length < 100 && (/\d/.test(text) || text.toLowerCase().includes('cup') || text.toLowerCase().includes('tbsp') || text.toLowerCase().includes('tsp'))) {
+                ingredients.push({ amount: "", unit: "", name: text });
+            }
+        });
+    }
 
     let instructions = [];
-    $('[class*="instruction"], [class*="direction"], [itemprop="recipeInstructions"], .wprm-recipe-instruction').each((i, el) => {
-        const text = $(el).text();
-        if (text) {
-            const cleaned = text.trim();
-            if (cleaned) instructions.push(cleaned);
-        }
-    });
+    const instructionSelectors = [
+        '.wprm-recipe-instruction',
+        '.tasty-recipes-instructions li',
+        '[itemprop="recipeInstructions"] li',
+        '[itemprop="recipeInstructions"]',
+        '.recipe-instructions li'
+    ];
+
+    for (const selector of instructionSelectors) {
+        $(selector).each((i, el) => {
+            const text = $(el).text().trim();
+            if (text && !instructions.includes(text)) {
+                instructions.push(text);
+            }
+        });
+        if (instructions.length > 0) break;
+    }
 
     return {
         id: Date.now().toString(),
         title,
-        author,
+        author: typeof author === 'string' ? author.trim() : "Blog Author",
         category: "Main Course",
-        prepTime: "15 mins",
-        cookTime: "20 mins",
-        defaultServings: 4,
-        ingredients: ingredients.length > 0 ? ingredients : [{ amount: "", unit: "", name: "Visit original website for full ingredient list" }],
-        instructions: instructions.length > 0 ? instructions : ["Visit original website for step-by-step instructions"],
+        prepTime: $('[itemprop="prepTime"]').attr('content') || "15 mins",
+        cookTime: $('[itemprop="cookTime"]').attr('content') || "20 mins",
+        defaultServings: parseInt($('[itemprop="recipeYield"]').text()) || 4,
+        ingredients: ingredients.length > 0 ? ingredients : [{ amount: "", unit: "", name: "Visit original website for ingredients" }],
+        instructions: instructions.length > 0 ? instructions : ["Visit original website for instructions"],
         image
     };
 }
