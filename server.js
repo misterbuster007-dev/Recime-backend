@@ -44,14 +44,8 @@ app.get('/parse-recipe', async (req, res) => {
             recipes = await parseUniversalWebRecipes(inputUrl);
         }
 
-        // BACKWARD COMPATIBILITY: 
-        // If it's just one recipe, send a single object so your installed APK handles it perfectly.
-        // If it's multiple recipes (like a roundup), send the array.
-        if (Array.isArray(recipes) && recipes.length === 1) {
-            res.json(recipes[0]);
-        } else {
-            res.json(recipes);
-        }
+        // Always return an array so the app can loop through single or multiple recipes
+        res.json(Array.isArray(recipes) ? recipes : [recipes]);
 
     } catch (error) {
         console.error("Universal Parsing Error:", error.message);
@@ -59,6 +53,7 @@ app.get('/parse-recipe', async (req, res) => {
     }
 });
 
+// --- MULTI-RECIPE WEB & SOCIAL MEDIA PARSER ---
 async function parseUniversalWebRecipes(url) {
     let pageTitle = "Recipe Collection";
     let pageImage = "";
@@ -99,7 +94,7 @@ async function parseUniversalWebRecipes(url) {
     ${rawBodyText.slice(0, 18000)}
 
     Task:
-    Extract ALL recipes found in the provided text above. If this is a single recipe page, return an array with 1 recipe object inside it. If this is a meal plan or roundup, extract every individual recipe into the array. Each recipe must include its exact title, author, category, prep/cook time, servings, ingredients (with amounts, units, categories), and step-by-step instructions. Never return empty fields.
+    Extract ALL recipes found in the provided text above. If this is a weekly meal plan, roundup, or multi-recipe post (like a Substack meal plan), extract EVERY individual recipe into a separate object within an array. Each recipe must include its exact title, author, category, prep/cook time, servings, ingredients (with amounts, units, categories), and step-by-step instructions. Never return empty fields.
 
     Return strictly valid JSON as a JSON array of objects with no markdown formatting around it: 
     [
@@ -148,6 +143,7 @@ async function parseUniversalWebRecipes(url) {
     return recipeArray;
 }
 
+// --- MULTI-RECIPE YOUTUBE PARSER ---
 async function parseYouTubeRecipes(url) {
     const videoId = extractYouTubeId(url);
     let videoTitle = "YouTube Recipe";
@@ -180,7 +176,7 @@ async function parseYouTubeRecipes(url) {
     Video Description / Context: "${webContext}"
 
     Task:
-    Extract the recipe featured in this video. Return it as a JSON array containing 1 recipe object.
+    Extract ALL recipes featured or discussed in this video. If the video covers multiple dishes, return all of them as a JSON array.
 
     Return strictly valid JSON as an array of objects with no markdown formatting around it: 
     [
