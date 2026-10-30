@@ -19,7 +19,7 @@ function extractYouTubeId(url) {
     return (match && match[2].length === 11) ? match[2] : null;
 }
 
-// Safe JSON parser to strip markdown backticks if Gemini includes them
+// Safe JSON parser supporting both single recipe objects and arrays of recipes
 function cleanAndParseJSON(text) {
     let cleanText = text.trim();
     if (cleanText.startsWith("```json")) {
@@ -37,15 +37,16 @@ app.get('/parse-recipe', async (req, res) => {
     }
 
     try {
-        let recipeData = null;
+        let recipes = [];
 
         if (isYouTubeUrl(inputUrl)) {
-            recipeData = await parseYouTubeRecipe(inputUrl);
+            recipes = await parseYouTubeRecipes(inputUrl);
         } else {
-            recipeData = await parseUniversalWebRecipe(inputUrl);
+            recipes = await parseUniversalWebRecipes(inputUrl);
         }
 
-        res.json(recipeData);
+        // Ensure we always return an array to your app frontend
+        res.json(Array.isArray(recipes) ? recipes : [recipes]);
 
     } catch (error) {
         console.error("Universal Parsing Error:", error.message);
@@ -53,9 +54,9 @@ app.get('/parse-recipe', async (req, res) => {
     }
 });
 
-// --- UNIVERSAL WEB & SOCIAL MEDIA PARSER ---
-async function parseUniversalWebRecipe(url) {
-    let pageTitle = "Recipe";
+// --- MULTI-RECIPE WEB & SOCIAL MEDIA PARSER ---
+async function parseUniversalWebRecipes(url) {
+    let pageTitle = "Recipe Collection";
     let pageImage = "";
     let rawBodyText = "";
 
@@ -84,33 +85,35 @@ async function parseUniversalWebRecipe(url) {
     }
 
     if (!rawBodyText || rawBodyText.length < 100) {
-        rawBodyText = `Please extract the complete recipe from this URL: ${url}`;
+        rawBodyText = `Please extract all recipes from this URL: ${url}`;
     }
 
     const prompt = `You are an expert culinary recipe parser and professional chef. 
     Source URL: ${url}
     Page Title: "${pageTitle}"
     Extracted Page Content: 
-    ${rawBodyText.slice(0, 15000)}
+    ${rawBodyText.slice(0, 18000)}
 
     Task:
-    Extract the complete, precise recipe from the provided text above. You must find and extract all exact ingredients (with amounts, units, and categories like "Pantry & Grains", "Produce", "Dairy") and clear step-by-step instructions. Never return empty ingredients or instructions.
+    Extract ALL recipes found in the provided text above. If this is a weekly meal plan, roundup, or multi-recipe post (like a Substack meal plan), extract EVERY individual recipe into a separate object within an array. Each recipe must include its exact title, author, category, prep/cook time, servings, ingredients (with amounts, units, categories), and step-by-step instructions. Never return empty fields.
 
-    Return strictly valid JSON matching this exact structure with no markdown formatting around it: 
-    {
-      "title": "Clean Recipe Title", 
-      "author": "Creator or Site Name", 
-      "category": "Breakfast", 
-      "prepTime": "15 mins", 
-      "cookTime": "20 mins", 
-      "defaultServings": 4, 
-      "ingredients": [
-        {"name": "Ingredient name", "amount": 1, "unit": "cup", "category": "Pantry & Grains"}
-      ], 
-      "instructions": [
-        "Step 1 text",
-        "Step 2 text"
-      ]
+    Return strictly valid JSON as a JSON array of objects with no markdown formatting around it: 
+    [
+      {
+        "title": "Clean Recipe Title", 
+        "author": "Creator or Site Name", 
+        "category": "Main Course", 
+        "prepTime": "15 mins", 
+        "cookTime": "20 mins", 
+        "defaultServings": 4, 
+        "ingredients": [
+          {"name": "Ingredient name", "amount": 1, "unit": "cup", "category": "Pantry & Grains"}
+        ], 
+        "instructions": [
+          "Step 1 text",
+          "Step 2 text"
+        ]
+      }
     }`;
 
     const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
@@ -128,17 +131,21 @@ async function parseUniversalWebRecipe(url) {
     }
 
     const rawText = geminiData.candidates[0].content.parts[0].text;
-    const parsedRecipe = cleanAndParseJSON(rawText);
+    const parsedRecipes = cleanAndParseJSON(rawText);
 
-    if (pageImage && !parsedRecipe.image) {
-        parsedRecipe.image = pageImage;
-    }
-    parsedRecipe.id = Date.now().toString();
-    return parsedRecipe;
+    const recipeArray = Array.isArray(parsedRecipes) ? parsedRecipes : [parsedRecipes];
+    recipeArray.forEach((recipe, index) => {
+        if (pageImage && !recipe.image) {
+            recipe.image = pageImage;
+        }
+        recipe.id = (Date.now() + index).toString();
+    });
+
+    return recipeArray;
 }
 
-// --- YOUTUBE RECIPE PARSER ---
-async function parseYouTubeRecipe(url) {
+// --- MULTI-RECIPE YOUTUBE PARSER ---
+async function parseYouTubeRecipes(url) {
     const videoId = extractYouTubeId(url);
     let videoTitle = "YouTube Recipe";
     let videoAuthor = "YouTube Creator";
@@ -170,23 +177,25 @@ async function parseYouTubeRecipe(url) {
     Video Description / Context: "${webContext}"
 
     Task:
-    Provide the complete, precise, professional recipe featured or discussed in this video. 
+    Extract ALL recipes featured or discussed in this video. If the video covers multiple dishes or a multi-recipe compilation, return all of them as a JSON array.
 
-    Return strictly valid JSON matching this exact structure with no markdown formatting around it: 
-    {
-      "title": "Recipe Title", 
-      "author": "${videoAuthor}", 
-      "category": "Main Course", 
-      "prepTime": "30 mins", 
-      "cookTime": "20 mins", 
-      "defaultServings": 4, 
-      "ingredients": [
-        {"name": "Ingredient name", "amount": 1, "unit": "cup", "category": "Pantry & Grains"}
-      ], 
-      "instructions": [
-        "Step 1 text",
-        "Step 2 text"
-      ]
+    Return strictly valid JSON as an array of objects with no markdown formatting around it: 
+    [
+      {
+        "title": "Recipe Title", 
+        "author": "${videoAuthor}", 
+        "category": "Main Course", 
+        "prepTime": "30 mins", 
+        "cookTime": "20 mins", 
+        "defaultServings": 4, 
+        "ingredients": [
+          {"name": "Ingredient name", "amount": 1, "unit": "cup", "category": "Pantry & Grains"}
+        ], 
+        "instructions": [
+          "Step 1 text",
+          "Step 2 text"
+        ]
+      }
     }`;
 
     const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
@@ -204,11 +213,15 @@ async function parseYouTubeRecipe(url) {
     }
 
     const rawText = geminiData.candidates[0].content.parts[0].text;
-    const parsedRecipe = cleanAndParseJSON(rawText);
+    const parsedRecipes = cleanAndParseJSON(rawText);
 
-    parsedRecipe.image = `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`;
-    parsedRecipe.id = Date.now().toString();
-    return parsedRecipe;
+    const recipeArray = Array.isArray(parsedRecipes) ? parsedRecipes : [parsedRecipes];
+    recipeArray.forEach((recipe, index) => {
+        recipe.image = `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`;
+        recipe.id = (Date.now() + index).toString();
+    });
+
+    return recipeArray;
 }
 
 const PORT = process.env.PORT || 3000;
