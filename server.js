@@ -27,51 +27,65 @@ app.get('/parse-recipe', async (req, res) => {
             return res.status(400).json({ error: "Invalid YouTube URL" });
         }
 
-        // 1. Try fetching YouTube Transcript
-        let contentSource = "";
+        let contentText = "";
+        let videoTitle = "YouTube Recipe";
+        let videoAuthor = "YouTube Creator";
+
+        // 1. Try fetching YouTube Transcript first
         try {
             const transcriptItems = await YoutubeTranscript.fetchTranscript(videoId);
-            contentSource = "Transcript: " + transcriptItems.map(item => item.text).join(' ');
+            contentText = transcriptItems.map(item => item.text).join(' ');
+            console.log("Successfully fetched transcript.");
         } catch (err) {
-            console.log("Transcript not available, fetching video page description...");
+            console.log("Transcript not available, fetching page metadata & description fallback...");
         }
 
-        // 2. Fallback: Fetch YouTube page HTML to grab the description if transcript failed
-        let videoTitle = "";
-        let videoAuthor = "";
+        // 2. Fetch YouTube oEmbed / page data for title and description fallback
         try {
-            const pageRes = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
-                headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
-            });
-            const html = await pageRes.text();
-            
-            // Extract title from meta tags
-            const titleMatch = html.match(/<meta name="title" content="([^"]+)">/);
-            if (titleMatch) videoTitle = titleMatch[1];
+            const oembedRes = await fetch(`https://www.youtube.com/oembed?url=${encodeURIComponent(videoUrl)}&format=json`);
+            if (oembedRes.ok) {
+                const oembedData = await oembedRes.json();
+                videoTitle = oembedData.title || videoTitle;
+                videoAuthor = oembedData.author_name || videoAuthor;
+            }
+        } catch (e) {}
 
-            // Extract description from meta tags if transcript was empty
-            if (!contentSource) {
+        // 3. If transcript is empty, fetch HTML description as the content source
+        if (!contentText || contentText.length < 50) {
+            try {
+                const pageRes = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
+                    headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+                });
+                const html = await pageRes.text();
+                
+                // Pull meta description
                 const descMatch = html.match(/<meta name="description" content="([^"]+)">/);
                 if (descMatch) {
-                    contentSource = "Video Description: " + descMatch[1];
+                    contentText = descMatch[1];
                 }
+            } catch (e) {
+                console.log("HTML fallback failed:", e);
             }
-        } catch (e) {
-            console.log("Web fallback failed:", e);
+        }
+
+        // Safety check if we still have nothing
+        if (!contentText) {
+            contentText = `Video Title: ${videoTitle}. Please extract a standard recipe for this dish based on the title and common culinary practices.`;
         }
 
         const prompt = `You are an expert culinary data extractor and recipe parser. A user has shared a YouTube cooking video.
         Video Title: ${videoTitle}
-        Video Content / Transcript / Description: ${contentSource.slice(0, 15000)}
+        Channel Name: ${videoAuthor}
+        Video Content / Description / Transcript: ${contentText.slice(0, 15000)}
 
         Task: 
-        1. Clean up the recipe title: Ignore clickbait phrases like "I spent 5 years perfecting", "2 Ingredient Recipes", or "Better than...". Provide a clean, direct, professional culinary name for the dish (e.g., "Yogurt Donuts" or "2-Ingredient Yogurt Doughnuts").
-        2. Extract precise ingredients with exact measurements (cups, grams, tsp/tbsp) and step-by-step instructions based strictly on the text above. 
+        1. Clean up the recipe title: Ignore clickbait phrases like "I spent 5 years perfecting" or "Better than...". Provide a clean, direct, professional culinary name for the dish (e.g., "2-Ingredient Yogurt Donuts").
+        2. Extract precise ingredients with exact measurements (cups, grams, tsp/tbsp) and step-by-step instructions based on the text above.
 
         Return strictly valid JSON matching this exact structure with no markdown formatting around it: 
         {
           "title": "Clean Dish Name", 
-          "author": "${videoAuthor || 'YouTube Creator'}", 
+          "author": "${videoAuthor}", 
           "category": "Baking", 
           "prepTime": "15 mins", 
           "cookTime": "20 mins", 
