@@ -1,227 +1,172 @@
 const express = require('express');
 const cors = require('cors');
-const fetch = require('node-fetch');
+const axios = require('axios');
 const cheerio = require('cheerio');
 
 const app = express();
+const PORT = process.env.PORT || 3000;
+
+// Middleware
 app.use(cors());
 app.use(express.json());
 
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+// Health check route
+app.get('/', (req, res) => {
+    res.json({ status: "Recime Backend is running successfully!" });
+});
 
-function isYouTubeUrl(url) {
-    return url.includes('youtube.com') || url.includes('youtu.be');
-}
-
-function extractYouTubeId(url) {
-    const regExp = /^.*(youtu.be\/|v\/|u\/\w\/|embed\/|shorts\/|watch\?v=|\&v=)([^#\&\?]*).*/;
-    const match = url.match(regExp);
-    return (match && match[2].length === 11) ? match[2] : null;
-}
-
-function cleanAndParseJSON(text) {
-    let cleanText = text.trim();
-    if (cleanText.startsWith("```json")) {
-        cleanText = cleanText.replace(/^```json/, "").replace(/```$/, "").trim();
-    } else if (cleanText.startsWith("```")) {
-        cleanText = cleanText.replace(/^```/, "").replace(/```$/, "").trim();
-    }
-    return JSON.parse(cleanText);
-}
-
+// Recipe parsing endpoint
 app.get('/parse-recipe', async (req, res) => {
-    const inputUrl = req.query.url;
-    if (!inputUrl) {
-        return res.status(400).json({ error: "Missing URL parameter" });
-    }
-
     try {
-        let recipes = [];
-
-        if (isYouTubeUrl(inputUrl)) {
-            recipes = await parseYouTubeRecipes(inputUrl);
-        } else {
-            recipes = await parseUniversalWebRecipes(inputUrl);
+        const targetUrl = req.query.url;
+        if (!targetUrl) {
+            return res.status(400).json({ error: "URL is required" });
         }
 
-        // Always return an array so the app can loop through single or multiple recipes
-        res.json(Array.isArray(recipes) ? recipes : [recipes]);
+        console.log("Parsing recipe for URL:", targetUrl);
+
+        let parsedData;
+
+        // Route handling based on URL type
+        if (targetUrl.includes('youtube.com') || targetUrl.includes('youtu.be')) {
+            parsedData = await parseYouTubeRecipe(targetUrl);
+        } else {
+            parsedData = await parseStandardWebRecipe(targetUrl);
+        }
+
+        // CRITICAL: Always normalize output into an array so multi-recipe 
+        // roundups and single recipes both return a consistent format for the app
+        const finalOutput = Array.isArray(parsedData) ? parsedData : [parsedData];
+
+        return res.json(finalOutput);
 
     } catch (error) {
-        console.error("Universal Parsing Error:", error.message);
-        res.status(500).json({ error: "Could not parse recipe from URL: " + error.message });
+        console.error("Backend Parsing Error:", error);
+        return res.status(500).json({ error: error.message || "Failed to parse recipe" });
     }
 });
 
-// --- MULTI-RECIPE WEB & SOCIAL MEDIA PARSER ---
-async function parseUniversalWebRecipes(url) {
-    let pageTitle = "Recipe Collection";
-    let pageImage = "";
-    let rawBodyText = "";
-
+// ==========================================
+// YOUTUBE RECIPE PARSER
+// ==========================================
+async function parseYouTubeRecipe(url) {
     try {
-        const response = await fetch(url, {
-            headers: { 
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.9'
+        // Fetch the YouTube page HTML to extract video title, author, and description
+        const response = await axios.get(url, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             }
         });
-        const html = await response.text();
-        const $ = cheerio.load(html);
-
-        pageTitle = $('meta[property="og:title"]').attr('content') || $('title').text() || $('h1').first().text();
-        pageImage = $('meta[property="og:image"]').attr('content') || "";
         
-        let textChunks = [];
-        $('p, li, h2, h3').each((_, el) => {
-            const t = $(el).text().trim();
-            if (t.length > 0) textChunks.push(t);
-        });
-        rawBodyText = textChunks.join('\n');
-    } catch (e) {
-        console.log("Web fetch warning:", e.message);
-    }
+        const $ = cheerio.load(response.data);
+        
+        // Extract metadata from OpenGraph tags embedded in the YouTube page
+        const title = $('meta[property="og:title"]').attr('content') || "YouTube Recipe";
+        const author = $('meta[property="og:video:actor"], meta[name="author"]').attr('content') || "YouTube Creator";
+        const description = $('meta[property="og:description"]').attr('content') || "";
+        const image = $('meta[property="og:image"]').attr('content') || "";
 
-    if (!rawBodyText || rawBodyText.length < 100) {
-        rawBodyText = `Please extract all recipes from this URL: ${url}`;
-    }
+        // Simple text parser to split description lines into ingredients/instructions blocks if formatted
+        const lines = description.split('\n').map(line => line.trim()).filter(line => line.length > 0);
+        
+        let ingredients = [];
+        let instructions = [];
+        let currentSection = 'general';
 
-    const prompt = `You are an expert culinary recipe parser and professional chef. 
-    Source URL: ${url}
-    Page Title: "${pageTitle}"
-    Extracted Page Content: 
-    ${rawBodyText.slice(0, 18000)}
+        for (const line of lines) {
+            const lower = line.toLowerCase();
+            if (lower.includes('ingredient') || lower.includes('you will need')) {
+                currentSection = 'ingredients';
+                continue;
+            } else if (lower.includes('instruction') || lower.includes('directions') || lower.includes('method') || lower.includes('steps')) {
+                currentSection = 'instructions';
+                continue;
+            }
 
-    Task:
-    Extract ALL recipes found in the provided text above. If this is a weekly meal plan, roundup, or multi-recipe post (like a Substack meal plan), extract EVERY individual recipe into a separate object within an array. Each recipe must include its exact title, author, category, prep/cook time, servings, ingredients (with amounts, units, categories), and step-by-step instructions. Never return empty fields.
-
-    Return strictly valid JSON as a JSON array of objects with no markdown formatting around it: 
-    [
-      {
-        "title": "Clean Recipe Title", 
-        "author": "Creator or Site Name", 
-        "category": "Main Course", 
-        "prepTime": "15 mins", 
-        "cookTime": "20 mins", 
-        "defaultServings": 4, 
-        "ingredients": [
-          {"name": "Ingredient name", "amount": 1, "unit": "cup", "category": "Pantry & Grains"}
-        ], 
-        "instructions": [
-          "Step 1 text",
-          "Step 2 text"
-        ]
-      }
-    }`;
-
-    const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            contents: [{ parts: [{ text: prompt }] }],
-            generationConfig: { responseMimeType: "application/json" }
-        })
-    });
-
-    const geminiData = await geminiRes.json();
-    if (geminiData.error) {
-        throw new Error(geminiData.error.message);
-    }
-
-    const rawText = geminiData.candidates[0].content.parts[0].text;
-    const parsedRecipes = cleanAndParseJSON(rawText);
-
-    const recipeArray = Array.isArray(parsedRecipes) ? parsedRecipes : [parsedRecipes];
-    recipeArray.forEach((recipe, index) => {
-        if (pageImage && !recipe.image) {
-            recipe.image = pageImage;
+            if (currentSection === 'ingredients') {
+                ingredients.push(line);
+            } else if (currentSection === 'instructions') {
+                instructions.push(line);
+            }
         }
-        recipe.id = (Date.now() + index).toString();
-    });
 
-    return recipeArray;
+        // Fallback if description formatting wasn't explicitly segmented
+        if (ingredients.length === 0) {
+            ingredients = lines.slice(0, Math.min(lines.length, 10)); // Grab first few lines as fallback
+        }
+        if (instructions.length === 0) {
+            instructions = lines.slice(Math.min(lines.length, 10));
+        }
+
+        return {
+            id: Date.now().toString(),
+            title: title,
+            author: author,
+            category: "YouTube",
+            prepTime: "15 mins",
+            cookTime: "20 mins",
+            defaultServings: 4,
+            ingredients: ingredients.length > 0 ? ingredients : ["Check video description for ingredients"],
+            instructions: instructions.length > 0 ? instructions : ["Watch video for instructions"],
+            image: image
+        };
+
+    } catch (error) {
+        console.error("YouTube Parsing Error:", error);
+        throw new Error("Could not extract recipe from YouTube URL.");
+    }
 }
 
-// --- MULTI-RECIPE YOUTUBE PARSER ---
-async function parseYouTubeRecipes(url) {
-    const videoId = extractYouTubeId(url);
-    let videoTitle = "YouTube Recipe";
-    let videoAuthor = "YouTube Creator";
-    let webContext = "";
-
+// ==========================================
+// STANDARD WEBSITE RECIPE PARSER
+// ==========================================
+async function parseStandardWebRecipe(url) {
     try {
-        const oembedRes = await fetch(`https://www.youtube.com/oembed?url=${encodeURIComponent(url)}&format=json`);
-        if (oembedRes.ok) {
-            const oembedData = await oembedRes.json();
-            videoTitle = oembedData.title || videoTitle;
-            videoAuthor = oembedData.author_name || videoAuthor;
-        }
-    } catch (e) {}
-
-    try {
-        const pageRes = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
-            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+        const response = await axios.get(url, {
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            }
         });
-        const html = await pageRes.text();
-        const descMatch = html.match(/<meta name="description" content="([^"]+)">/);
-        if (descMatch) {
-            webContext = descMatch[1];
-        }
-    } catch (e) {}
+        
+        const $ = cheerio.load(response.data);
+        
+        // Basic meta tag scraping for standard blogs/websites
+        const title = $('meta[property="og:title"]').attr('content') || $('title').text() || "Web Recipe";
+        const author = $('meta[name="author"]').attr('content') || "Blog Author";
+        const image = $('meta[property="og:image"]').attr('content') || "";
 
-    const prompt = `You are an expert culinary recipe parser and professional chef. 
-    Video Title: "${videoTitle}"
-    Channel / Creator: "${videoAuthor}"
-    Video Description / Context: "${webContext}"
+        // Extract ingredients and instructions using common CSS selectors
+        let ingredients = [];
+        $('[class*="ingredient"], [itemprop="recipeIngredient"]').each((i, el) => {
+            const text = $(el).text().trim();
+            if (text) ingredients.push(text);
+        });
 
-    Task:
-    Extract ALL recipes featured or discussed in this video. If the video covers multiple dishes, return all of them as a JSON array.
+        let instructions = [];
+        $('[class*="instruction"], [class*="direction"], [itemprop="recipeInstructions"]').each((i, el) => {
+            const text = $(el).text().trim();
+            if (text) instructions.push(text);
+        });
 
-    Return strictly valid JSON as an array of objects with no markdown formatting around it: 
-    [
-      {
-        "title": "Recipe Title", 
-        "author": "${videoAuthor}", 
-        "category": "Main Course", 
-        "prepTime": "30 mins", 
-        "cookTime": "20 mins", 
-        "defaultServings": 4, 
-        "ingredients": [
-          {"name": "Ingredient name", "amount": 1, "unit": "cup", "category": "Pantry & Grains"}
-        ], 
-        "instructions": [
-          "Step 1 text",
-          "Step 2 text"
-        ]
-      }
-    }`;
+        return {
+            id: Date.now().toString(),
+            title: title,
+            author: author,
+            category: "Main Course",
+            prepTime: "15 mins",
+            cookTime: "20 mins",
+            defaultServings: 4,
+            ingredients: ingredients.length > 0 ? ingredients : ["Ingredient data not automatically formatted"],
+            instructions: instructions.length > 0 ? instructions : ["Instruction data not automatically formatted"],
+            image: image
+        };
 
-    const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            contents: [{ parts: [{ text: prompt }] }],
-            generationConfig: { responseMimeType: "application/json" }
-        })
-    });
-
-    const geminiData = await geminiRes.json();
-    if (geminiData.error) {
-        throw new Error(geminiData.error.message);
+    } catch (error) {
+        console.error("Web Scraping Error:", error);
+        throw new Error("Could not scrape recipe from website.");
     }
-
-    const rawText = geminiData.candidates[0].content.parts[0].text;
-    const parsedRecipes = cleanAndParseJSON(rawText);
-
-    const recipeArray = Array.isArray(parsedRecipes) ? parsedRecipes : [parsedRecipes];
-    recipeArray.forEach((recipe, index) => {
-        recipe.image = `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`;
-        recipe.id = (Date.now() + index).toString();
-    });
-
-    return recipeArray;
 }
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
+app.listen(PORT, () => {
+    console.log(`Server is listening on port ${PORT}`);
+});
