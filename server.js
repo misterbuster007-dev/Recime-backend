@@ -31,59 +31,71 @@ app.get('/parse-recipe', async (req, res) => {
         if (isYouTubeUrl(inputUrl)) {
             recipeData = await parseYouTubeRecipe(inputUrl);
         } else {
-            recipeData = await parseWebsiteRecipe(inputUrl);
+            // Handles TikTok, Instagram, food blogs, and any other website!
+            recipeData = await parseUniversalWebRecipe(inputUrl);
         }
 
         res.json(recipeData);
 
     } catch (error) {
-        console.error("Parsing Error:", error.message);
+        console.error("Universal Parsing Error:", error.message);
         res.status(500).json({ error: "Could not parse recipe from URL: " + error.message });
     }
 });
 
-// --- WEBSITE RECIPE PARSER ---
-async function parseWebsiteRecipe(url) {
-    const response = await fetch(url, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
-    });
-    const html = await response.text();
-    const $ = cheerio.load(html);
+// --- UNIVERSAL WEB & SOCIAL MEDIA PARSER (TikTok, IG, Blogs, etc.) ---
+async function parseUniversalWebRecipe(url) {
+    let pageTitle = "";
+    let pageDescription = "";
+    let pageImage = "";
+    let rawBodyText = "";
 
-    let jsonLdData = null;
-    $('script[type="application/ld+json"]').each((_, el) => {
-        try {
-            const parsed = JSON.parse($(el).html());
-            if (parsed['@type'] === 'Recipe' || (Array.isArray(parsed) && parsed.some(item => item['@type'] === 'Recipe'))) {
-                jsonLdData = Array.isArray(parsed) ? parsed.find(item => item['@type'] === 'Recipe') : parsed;
-            } else if (parsed['@graph']) {
-                const found = parsed['@graph'].find(item => item['@type'] === 'Recipe');
-                if (found) jsonLdData = found;
+    try {
+        const response = await fetch(url, {
+            headers: { 
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept-Language': 'en-US,en;q=0.9'
             }
-        } catch (e) {}
-    });
+        });
+        const html = await response.text();
+        const $ = cheerio.load(html);
 
-    const pageTitle = $('title').text() || $('h1').first().text();
-    const bodyText = $('body').text().replace(/\s+/g, ' ').slice(0, 15000);
+        // Extract OpenGraph meta tags (Crucial for TikTok, Instagram, Pinterest, and modern blogs)
+        pageTitle = $('meta[property="og:title"]').attr('content') || $('title').text() || $('h1').first().text();
+        pageDescription = $('meta[property="og:description"]').attr('content') || $('meta[name="description"]').attr('content') || "";
+        pageImage = $('meta[property="og:image"]').attr('content') || "";
+        
+        // Grab general text content for fallback
+        rawBodyText = $('body').text().replace(/\s+/g, ' ').slice(0, 15000);
+    } catch (e) {
+        console.log("Web fetch warning:", e.message);
+    }
 
-    const prompt = `You are a universal recipe parsing engine.
-    Website URL: ${url}
-    Page Title: ${pageTitle}
-    Structured JSON-LD Data: ${jsonLdData ? JSON.stringify(jsonLdData) : "None"}
-    Raw Page Content: ${jsonLdData ? "Not needed" : bodyText}
+    const prompt = `You are an expert culinary recipe parser and professional chef. 
+    A user has shared a cooking link from the web or social media (TikTok, Instagram, or a food blog).
+    Source URL: ${url}
+    Page Title: "${pageTitle}"
+    Social Caption / Meta Description: "${pageDescription}"
+    General Page Content: "${rawBodyText.slice(0, 4000)}"
 
-    Extract and structure the recipe into clean, valid JSON.
-    Return strictly valid JSON matching this exact structure with no markdown wrapper:
+    Task:
+    Extract the complete, precise recipe from the provided text, caption, or title. Clean up clickbait titles, provide exact ingredient measurements, units, categories, and clear step-by-step instructions.
+
+    Return strictly valid JSON matching this exact structure with no markdown formatting around it: 
     {
-      "title": "Recipe Title",
-      "author": "Author Name",
-      "category": "Main Course",
-      "prepTime": "15 mins",
-      "cookTime": "30 mins",
-      "defaultServings": 4,
-      "ingredients": [{"name": "Ingredient name", "amount": 1, "unit": "cup", "category": "Pantry"}],
-      "instructions": ["Step 1", "Step 2"],
-      "image": "Image URL if available"
+      "title": "Clean Recipe Title", 
+      "author": "Creator or Site Name", 
+      "category": "Main Course", 
+      "prepTime": "15 mins", 
+      "cookTime": "20 mins", 
+      "defaultServings": 4, 
+      "ingredients": [
+        {"name": "Ingredient name", "amount": 1, "unit": "cup", "category": "Pantry & Grains"}
+      ], 
+      "instructions": [
+        "Step 1 text",
+        "Step 2 text"
+      ]
     }`;
 
     const geminiRes = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`, {
@@ -96,7 +108,14 @@ async function parseWebsiteRecipe(url) {
     });
 
     const geminiData = await geminiRes.json();
+    if (geminiData.error) {
+        throw new Error(geminiData.error.message);
+    }
+
     const parsedRecipe = JSON.parse(geminiData.candidates[0].content.parts[0].text);
+    if (pageImage && !parsedRecipe.image) {
+        parsedRecipe.image = pageImage;
+    }
     parsedRecipe.id = Date.now().toString();
     return parsedRecipe;
 }
