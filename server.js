@@ -19,6 +19,17 @@ function extractYouTubeId(url) {
     return (match && match[2].length === 11) ? match[2] : null;
 }
 
+// Safe JSON parser to strip markdown backticks if Gemini includes them
+function cleanAndParseJSON(text) {
+    let cleanText = text.trim();
+    if (cleanText.startsWith("```json")) {
+        cleanText = cleanText.replace(/^```json/, "").replace(/```$/, "").trim();
+    } else if (cleanText.startsWith("```")) {
+        cleanText = cleanText.replace(/^```/, "").replace(/```$/, "").trim();
+    }
+    return JSON.parse(cleanText);
+}
+
 app.get('/parse-recipe', async (req, res) => {
     const inputUrl = req.query.url;
     if (!inputUrl) {
@@ -31,7 +42,6 @@ app.get('/parse-recipe', async (req, res) => {
         if (isYouTubeUrl(inputUrl)) {
             recipeData = await parseYouTubeRecipe(inputUrl);
         } else {
-            // Handles TikTok, Instagram, food blogs, and any other website!
             recipeData = await parseUniversalWebRecipe(inputUrl);
         }
 
@@ -43,7 +53,7 @@ app.get('/parse-recipe', async (req, res) => {
     }
 });
 
-// --- UNIVERSAL WEB & SOCIAL MEDIA PARSER (TikTok, IG, Blogs, etc.) ---
+// --- UNIVERSAL WEB & SOCIAL MEDIA PARSER ---
 async function parseUniversalWebRecipe(url) {
     let pageTitle = "";
     let pageDescription = "";
@@ -60,26 +70,22 @@ async function parseUniversalWebRecipe(url) {
         const html = await response.text();
         const $ = cheerio.load(html);
 
-        // Extract OpenGraph meta tags (Crucial for TikTok, Instagram, Pinterest, and modern blogs)
         pageTitle = $('meta[property="og:title"]').attr('content') || $('title').text() || $('h1').first().text();
         pageDescription = $('meta[property="og:description"]').attr('content') || $('meta[name="description"]').attr('content') || "";
         pageImage = $('meta[property="og:image"]').attr('content') || "";
-        
-        // Grab general text content for fallback
         rawBodyText = $('body').text().replace(/\s+/g, ' ').slice(0, 15000);
     } catch (e) {
         console.log("Web fetch warning:", e.message);
     }
 
     const prompt = `You are an expert culinary recipe parser and professional chef. 
-    A user has shared a cooking link from the web or social media (TikTok, Instagram, or a food blog).
     Source URL: ${url}
     Page Title: "${pageTitle}"
     Social Caption / Meta Description: "${pageDescription}"
     General Page Content: "${rawBodyText.slice(0, 4000)}"
 
     Task:
-    Extract the complete, precise recipe from the provided text, caption, or title. Clean up clickbait titles, provide exact ingredient measurements, units, categories, and clear step-by-step instructions.
+    Extract the complete, precise recipe from the provided text or caption. Provide exact ingredient measurements, units, categories, and clear step-by-step instructions.
 
     Return strictly valid JSON matching this exact structure with no markdown formatting around it: 
     {
@@ -112,7 +118,9 @@ async function parseUniversalWebRecipe(url) {
         throw new Error(geminiData.error.message);
     }
 
-    const parsedRecipe = JSON.parse(geminiData.candidates[0].content.parts[0].text);
+    const rawText = geminiData.candidates[0].content.parts[0].text;
+    const parsedRecipe = cleanAndParseJSON(rawText);
+
     if (pageImage && !parsedRecipe.image) {
         parsedRecipe.image = pageImage;
     }
@@ -148,7 +156,6 @@ async function parseYouTubeRecipe(url) {
     } catch (e) {}
 
     const prompt = `You are an expert culinary recipe parser and professional chef. 
-    The user has shared a YouTube cooking video link.
     Video Title: "${videoTitle}"
     Channel / Creator: "${videoAuthor}"
     Video Description / Context: "${webContext}"
@@ -183,7 +190,13 @@ async function parseYouTubeRecipe(url) {
     });
 
     const geminiData = await geminiRes.json();
-    const parsedRecipe = JSON.parse(geminiData.candidates[0].content.parts[0].text);
+    if (geminiData.error) {
+        throw new Error(geminiData.error.message);
+    }
+
+    const rawText = geminiData.candidates[0].content.parts[0].text;
+    const parsedRecipe = cleanAndParseJSON(rawText);
+
     parsedRecipe.image = `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`;
     parsedRecipe.id = Date.now().toString();
     return parsedRecipe;
