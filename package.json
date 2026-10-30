@@ -1,15 +1,14 @@
 {
   "name": "recime-backend",
   "version": "1.0.0",
-  "description": "ReciMe backend parser",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
-    "express": "^4.19.2",
-    "node-fetch": "^2.7.0",
-    "youtube-transcript": "^1.2.1"
+    "express": "^4.18.2",
+    "node-fetch": "^2.6.9",
+    "youtube-caption-extractor": "^1.0.0"
   }
 }
