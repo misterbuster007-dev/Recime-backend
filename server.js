@@ -30,9 +30,7 @@ app.get('/parse-recipe', async (req, res) => {
             parsedData = await parseStandardWebRecipe(targetUrl);
         }
 
-        // CRITICAL: Ensure multi-recipe roundups return an array, single recipes can be wrapped or sent as is
         const finalOutput = Array.isArray(parsedData) ? parsedData : [parsedData];
-
         return res.json(finalOutput);
 
     } catch (error) {
@@ -47,7 +45,7 @@ app.get('/parse-recipe', async (req, res) => {
 function cleanRecipeTitle(rawTitle) {
     if (!rawTitle) return "Imported Recipe";
     
-    let clean = rawTitle
+    let clean = String(rawTitle)
         .replace(/^(how to (make|get|cook|bake|prepare))\s+(those|the|best|easy|perfect)?\s*/i, '')
         .replace(/^(the\s+)?(best|ultimate|easy|quick|classic)\s+/i, '')
         .split('|')[0]
@@ -55,7 +53,7 @@ function cleanRecipeTitle(rawTitle) {
         .trim();
 
     if (!clean || clean.length < 3) {
-        clean = rawTitle.split('|')[0].trim();
+        clean = String(rawTitle).split('|')[0].trim();
     }
 
     return clean;
@@ -86,7 +84,7 @@ async function parseYouTubeRecipe(url) {
     let currentSection = 'ingredients';
 
     for (const line of lines) {
-        const lower = String(line || '').toLowerCase();
+        const lower = String(line || '').toLowerCase(); // SAFEGUARDED
         
         if (lower.includes('ingredient') || lower.includes('what you need') || lower.includes('shopping')) {
             currentSection = 'ingredients';
@@ -140,7 +138,6 @@ async function parseStandardWebRecipe(url) {
     
     const $ = cheerio.load(response.data);
     
-    // Check if this page has multiple separate recipe containers (roundup page)
     const recipeContainers = $('.wprm-recipe, .tasty-recipes, [itemtype*="Recipe"]');
 
     if (recipeContainers.length > 1) {
@@ -180,11 +177,10 @@ async function parseStandardWebRecipe(url) {
         });
 
         if (multiRecipes.length > 0) {
-            return multiRecipes; // Returns array so frontend creates individual recipe cards
+            return multiRecipes;
         }
     }
 
-    // Fallback: Single recipe parsing
     const rawTitle = $('meta[property="og:title"]').attr('content') || $('title').text() || "Web Recipe";
     const title = cleanRecipeTitle(rawTitle);
     const author = $('meta[name="author"]').attr('content') || $('[rel="author"]').text() || "Blog Author";
@@ -215,8 +211,10 @@ async function parseStandardWebRecipe(url) {
 
     if (ingredients.length === 0) {
         $('ul li, ol li').each((i, el) => {
-            const text = $(el).text().trim();
-            if (text.length > 3 && text.length < 100 && (/\d/.test(text) || text.toLowerCase().includes('cup') || text.toLowerCase().includes('tbsp') || text.toLowerCase().includes('tsp'))) {
+            const rawText = $(el).text();
+            const text = rawText ? rawText.trim() : "";
+            const lowerText = String(text).toLowerCase(); // SAFEGUARDED
+            if (text.length > 3 && text.length < 100 && (/\d/.test(text) || lowerText.includes('cup') || lowerText.includes('tbsp') || lowerText.includes('tsp'))) {
                 ingredients.push({ amount: "", unit: "", name: text });
             }
         });
@@ -250,6 +248,15 @@ async function parseStandardWebRecipe(url) {
         cookTime: $('[itemprop="cookTime"]').attr('content') || "20 mins",
         defaultServings: parseInt($('[itemprop="recipeYield"]').text()) || 4,
         ingredients: ingredients.length > 0 ? ingredients : [{ amount: "", unit: "", name: "Visit original website for ingredients" }],
+        instructions: instructions.length > 0 ? instructions : ["Visit original website for instructions"],
+        image
+    };
+}
+
+app.listen(PORT, () => {
+    console.log(`Server is listening on port ${PORT}`);
+});
+],
         instructions: instructions.length > 0 ? instructions : ["Visit original website for instructions"],
         image
     };
