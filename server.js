@@ -55,8 +55,7 @@ app.get('/parse-recipe', async (req, res) => {
 
 // --- UNIVERSAL WEB & SOCIAL MEDIA PARSER ---
 async function parseUniversalWebRecipe(url) {
-    let pageTitle = "";
-    let pageDescription = "";
+    let pageTitle = "Recipe";
     let pageImage = "";
     let rawBodyText = "";
 
@@ -64,6 +63,7 @@ async function parseUniversalWebRecipe(url) {
         const response = await fetch(url, {
             headers: { 
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                 'Accept-Language': 'en-US,en;q=0.9'
             }
         });
@@ -71,27 +71,36 @@ async function parseUniversalWebRecipe(url) {
         const $ = cheerio.load(html);
 
         pageTitle = $('meta[property="og:title"]').attr('content') || $('title').text() || $('h1').first().text();
-        pageDescription = $('meta[property="og:description"]').attr('content') || $('meta[name="description"]').attr('content') || "";
         pageImage = $('meta[property="og:image"]').attr('content') || "";
-        rawBodyText = $('body').text().replace(/\s+/g, ' ').slice(0, 15000);
+        
+        let textChunks = [];
+        $('p, li, h2, h3').each((_, el) => {
+            const t = $(el).text().trim();
+            if (t.length > 0) textChunks.push(t);
+        });
+        rawBodyText = textChunks.join('\n');
     } catch (e) {
         console.log("Web fetch warning:", e.message);
+    }
+
+    if (!rawBodyText || rawBodyText.length < 100) {
+        rawBodyText = `Please extract the complete recipe from this URL: ${url}`;
     }
 
     const prompt = `You are an expert culinary recipe parser and professional chef. 
     Source URL: ${url}
     Page Title: "${pageTitle}"
-    Social Caption / Meta Description: "${pageDescription}"
-    General Page Content: "${rawBodyText.slice(0, 4000)}"
+    Extracted Page Content: 
+    ${rawBodyText.slice(0, 15000)}
 
     Task:
-    Extract the complete, precise recipe from the provided text or caption. Provide exact ingredient measurements, units, categories, and clear step-by-step instructions.
+    Extract the complete, precise recipe from the provided text above. You must find and extract all exact ingredients (with amounts, units, and categories like "Pantry & Grains", "Produce", "Dairy") and clear step-by-step instructions. Never return empty ingredients or instructions.
 
     Return strictly valid JSON matching this exact structure with no markdown formatting around it: 
     {
       "title": "Clean Recipe Title", 
       "author": "Creator or Site Name", 
-      "category": "Main Course", 
+      "category": "Breakfast", 
       "prepTime": "15 mins", 
       "cookTime": "20 mins", 
       "defaultServings": 4, 
