@@ -30,7 +30,6 @@ app.get('/parse-recipe', async (req, res) => {
             parsedData = await parseStandardWebRecipe(targetUrl);
         }
 
-        // Return the exact data format your original working version used
         return res.json(parsedData);
 
     } catch (error) {
@@ -72,14 +71,18 @@ async function parseYouTubeRecipe(url) {
         }
 
         if (currentSection === 'ingredients') {
-            ingredients.push(line);
+            ingredients.push({ amount: "", unit: "", name: line });
         } else if (currentSection === 'instructions') {
             instructions.push(line);
         }
     }
 
-    if (ingredients.length === 0) ingredients = lines.slice(0, Math.min(lines.length, 10));
-    if (instructions.length === 0) instructions = lines.slice(Math.min(lines.length, 10));
+    if (ingredients.length === 0) {
+        ingredients = lines.slice(0, Math.min(lines.length, 10)).map(l => ({ amount: "", unit: "", name: l }));
+    }
+    if (instructions.length === 0) {
+        instructions = lines.slice(Math.min(lines.length, 10));
+    }
 
     return {
         id: Date.now().toString(),
@@ -89,7 +92,7 @@ async function parseYouTubeRecipe(url) {
         prepTime: "15 mins",
         cookTime: "20 mins",
         defaultServings: 4,
-        ingredients: ingredients.length > 0 ? ingredients : ["Check video description for ingredients"],
+        ingredients: ingredients.length > 0 ? ingredients : [{ amount: "", unit: "", name: "Check video description" }],
         instructions: instructions.length > 0 ? instructions : ["Watch video for instructions"],
         image
     };
@@ -112,11 +115,20 @@ async function parseStandardWebRecipe(url) {
     const image = $('meta[property="og:image"]').attr('content') || "";
 
     let ingredients = [];
+    
+    // Extract structured WPRM or microdata ingredients matching frontend expectations
     $('[class*="ingredient"], [itemprop="recipeIngredient"], .wprm-recipe-ingredient').each((i, el) => {
-        const text = $(el).text();
-        if (text) {
-            const cleaned = text.trim();
-            if (cleaned) ingredients.push(cleaned);
+        const amount = $(el).find('.wprm-recipe-ingredient-amount').text().trim() || "";
+        const unit = $(el).find('.wprm-recipe-ingredient-unit').text().trim() || "";
+        const nameNode = $(el).find('.wprm-recipe-ingredient-name').text().trim();
+        const fullName = nameNode || $(el).text().trim();
+
+        if (fullName) {
+            ingredients.push({
+                amount: amount,
+                unit: unit,
+                name: fullName
+            });
         }
     });
 
@@ -137,7 +149,7 @@ async function parseStandardWebRecipe(url) {
         prepTime: "15 mins",
         cookTime: "20 mins",
         defaultServings: 4,
-        ingredients: ingredients.length > 0 ? ingredients : ["Visit original website for full ingredient list"],
+        ingredients: ingredients.length > 0 ? ingredients : [{ amount: "", unit: "", name: "Visit original website for full ingredient list" }],
         instructions: instructions.length > 0 ? instructions : ["Visit original website for step-by-step instructions"],
         image
     };
