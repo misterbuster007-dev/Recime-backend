@@ -84,7 +84,7 @@ async function parseYouTubeRecipe(url) {
     let currentSection = 'ingredients';
 
     for (const line of lines) {
-        const lower = String(line || '').toLowerCase(); // SAFEGUARDED
+        const lower = String(line || '').toLowerCase();
         
         if (lower.includes('ingredient') || lower.includes('what you need') || lower.includes('shopping')) {
             currentSection = 'ingredients';
@@ -213,7 +213,7 @@ async function parseStandardWebRecipe(url) {
         $('ul li, ol li').each((i, el) => {
             const rawText = $(el).text();
             const text = rawText ? rawText.trim() : "";
-            const lowerText = String(text).toLowerCase(); // SAFEGUARDED
+            const lowerText = String(text).toLowerCase();
             if (text.length > 3 && text.length < 100 && (/\d/.test(text) || lowerText.includes('cup') || lowerText.includes('tbsp') || lowerText.includes('tsp'))) {
                 ingredients.push({ amount: "", unit: "", name: text });
             }
@@ -255,6 +255,8 @@ async function parseStandardWebRecipe(url) {
 
 app.listen(PORT, () => {
     console.log(`Server is listening on port ${PORT}`);
+});
+console.log(`Server is listening on port ${PORT}`);
 });
 ],
         instructions: instructions.length > 0 ? instructions : ["Visit original website for instructions"],
