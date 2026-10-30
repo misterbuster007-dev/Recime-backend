@@ -30,13 +30,36 @@ app.get('/parse-recipe', async (req, res) => {
             parsedData = await parseStandardWebRecipe(targetUrl);
         }
 
-        return res.json(parsedData);
+        // CRITICAL: Ensure multi-recipe roundups return an array, single recipes can be wrapped or sent as is
+        const finalOutput = Array.isArray(parsedData) ? parsedData : [parsedData];
+
+        return res.json(finalOutput);
 
     } catch (error) {
         console.error("Backend Parsing Error:", error);
         return res.status(500).json({ error: error.message || "Failed to parse recipe" });
     }
 });
+
+// ==========================================
+// SMART TITLE CLEANER
+// ==========================================
+function cleanRecipeTitle(rawTitle) {
+    if (!rawTitle) return "Imported Recipe";
+    
+    let clean = rawTitle
+        .replace(/^(how to (make|get|cook|bake|prepare))\s+(those|the|best|easy|perfect)?\s*/i, '')
+        .replace(/^(the\s+)?(best|ultimate|easy|quick|classic)\s+/i, '')
+        .split('|')[0]
+        .split('-')[0]
+        .trim();
+
+    if (!clean || clean.length < 3) {
+        clean = rawTitle.split('|')[0].trim();
+    }
+
+    return clean;
+}
 
 // ==========================================
 // INTELLIGENT YOUTUBE RECIPE PARSER
@@ -49,7 +72,9 @@ async function parseYouTubeRecipe(url) {
     });
     
     const $ = cheerio.load(response.data);
-    const title = $('meta[property="og:title"]').attr('content') || "YouTube Recipe";
+    const rawTitle = $('meta[property="og:title"]').attr('content') || "YouTube Recipe";
+    const title = cleanRecipeTitle(rawTitle);
+    
     const author = $('meta[property="og:video:actor"], meta[name="author"]').attr('content') || "YouTube Creator";
     const description = $('meta[property="og:description"]').attr('content') || "";
     const image = $('meta[property="og:image"]').attr('content') || "";
@@ -58,12 +83,11 @@ async function parseYouTubeRecipe(url) {
     
     let ingredients = [];
     let instructions = [];
-    let currentSection = 'ingredients'; // Default assumption for video descriptions
+    let currentSection = 'ingredients';
 
     for (const line of lines) {
         const lower = String(line || '').toLowerCase();
         
-        // Detect section headers
         if (lower.includes('ingredient') || lower.includes('what you need') || lower.includes('shopping')) {
             currentSection = 'ingredients';
             continue;
@@ -72,7 +96,6 @@ async function parseYouTubeRecipe(url) {
             continue;
         }
 
-        // Skip social media links or irrelevant promo text
         if (lower.includes('http://') || lower.includes('https://') || lower.includes('instagram') || lower.includes('facebook') || lower.includes('subscribe')) {
             continue;
         }
@@ -84,7 +107,6 @@ async function parseYouTubeRecipe(url) {
         }
     }
 
-    // Fallback if no sections were cleanly separated
     if (ingredients.length === 0) {
         ingredients = lines.slice(0, Math.min(lines.length, 8)).map(l => ({ amount: "", unit: "", name: l }));
     }
@@ -107,7 +129,7 @@ async function parseYouTubeRecipe(url) {
 }
 
 // ==========================================
-// INTELLIGENT WEB RECIPE PARSER
+// INTELLIGENT WEB RECIPE PARSER (MULTI-RECIPE SUPPORT)
 // ==========================================
 async function parseStandardWebRecipe(url) {
     const response = await axios.get(url, {
@@ -118,13 +140,57 @@ async function parseStandardWebRecipe(url) {
     
     const $ = cheerio.load(response.data);
     
-    const title = $('meta[property="og:title"]').attr('content') || $('title').text() || "Web Recipe";
+    // Check if this page has multiple separate recipe containers (roundup page)
+    const recipeContainers = $('.wprm-recipe, .tasty-recipes, [itemtype*="Recipe"]');
+
+    if (recipeContainers.length > 1) {
+        let multiRecipes = [];
+        recipeContainers.each((index, container) => {
+            const $el = $(container);
+            const rawTitle = $el.find('.wprm-recipe-name, .tasty-recipes-title, [itemprop="name"]').first().text() || `Recipe ${index + 1}`;
+            const title = cleanRecipeTitle(rawTitle);
+            const image = $el.find('img').first().attr('src') || $('meta[property="og:image"]').attr('content') || "";
+
+            let ingredients = [];
+            $el.find('.wprm-recipe-ingredient, .tasty-recipes-ingredients li, [itemprop="recipeIngredient"]').each((i, ingEl) => {
+                const amount = $(ingEl).find('.wprm-recipe-ingredient-amount, .tasty-recipes-ingredient-amount').text().trim() || "";
+                const unit = $(ingEl).find('.wprm-recipe-ingredient-unit, .tasty-recipes-ingredient-unit').text().trim() || "";
+                const name = $(ingEl).find('.wprm-recipe-ingredient-name, .tasty-recipes-ingredient-name').text().trim() || $(ingEl).text().trim();
+                if (name) ingredients.push({ amount, unit, name });
+            });
+
+            let instructions = [];
+            $el.find('.wprm-recipe-instruction, .tasty-recipes-instructions li, [itemprop="recipeInstructions"]').each((i, instEl) => {
+                const text = $(instEl).text().trim();
+                if (text) instructions.push(text);
+            });
+
+            multiRecipes.push({
+                id: (Date.now() + index).toString(),
+                title,
+                author: "Blog Author",
+                category: "Main Course",
+                prepTime: "15 mins",
+                cookTime: "20 mins",
+                defaultServings: 4,
+                ingredients: ingredients.length > 0 ? ingredients : [{ amount: "", unit: "", name: "See website" }],
+                instructions: instructions.length > 0 ? instructions : ["See website"],
+                image
+            });
+        });
+
+        if (multiRecipes.length > 0) {
+            return multiRecipes; // Returns array so frontend creates individual recipe cards
+        }
+    }
+
+    // Fallback: Single recipe parsing
+    const rawTitle = $('meta[property="og:title"]').attr('content') || $('title').text() || "Web Recipe";
+    const title = cleanRecipeTitle(rawTitle);
     const author = $('meta[name="author"]').attr('content') || $('[rel="author"]').text() || "Blog Author";
     const image = $('meta[property="og:image"]').attr('content') || "";
 
     let ingredients = [];
-    
-    // Comprehensive selectors targeting common recipe card plugins (WP Recipe Maker, Tasty Recipes, Recipe Card Blocks, etc.)
     const ingredientSelectors = [
         '.wprm-recipe-ingredient',
         '.tasty-recipes-ingredients li',
@@ -147,7 +213,6 @@ async function parseStandardWebRecipe(url) {
         if (ingredients.length > 0) break;
     }
 
-    // Generic fallback if specific plugin selectors missed items
     if (ingredients.length === 0) {
         $('ul li, ol li').each((i, el) => {
             const text = $(el).text().trim();
