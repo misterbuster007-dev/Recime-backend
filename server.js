@@ -51,7 +51,6 @@ app.get('/parse-recipe', async (req, res) => {
 // ==========================================
 async function parseYouTubeRecipe(url) {
     try {
-        // Fetch the YouTube page HTML to extract video title, author, and description
         const response = await axios.get(url, {
             headers: {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
@@ -60,21 +59,19 @@ async function parseYouTubeRecipe(url) {
         
         const $ = cheerio.load(response.data);
         
-        // Extract metadata from OpenGraph tags embedded in the YouTube page
         const title = $('meta[property="og:title"]').attr('content') || "YouTube Recipe";
         const author = $('meta[property="og:video:actor"], meta[name="author"]').attr('content') || "YouTube Creator";
         const description = $('meta[property="og:description"]').attr('content') || "";
         const image = $('meta[property="og:image"]').attr('content') || "";
 
-        // Simple text parser to split description lines into ingredients/instructions blocks if formatted
-        const lines = description.split('\n').map(line => line.trim()).filter(line => line.length > 0);
+        const lines = description ? description.split('\n').map(line => line.trim()).filter(line => line.length > 0) : [];
         
         let ingredients = [];
         let instructions = [];
         let currentSection = 'general';
 
         for (const line of lines) {
-            const lower = line.toLowerCase();
+            const lower = String(line).toLowerCase(); // Safeguarded to prevent undefined toLowerCase errors
             if (lower.includes('ingredient') || lower.includes('you will need')) {
                 currentSection = 'ingredients';
                 continue;
@@ -90,9 +87,8 @@ async function parseYouTubeRecipe(url) {
             }
         }
 
-        // Fallback if description formatting wasn't explicitly segmented
         if (ingredients.length === 0) {
-            ingredients = lines.slice(0, Math.min(lines.length, 10)); // Grab first few lines as fallback
+            ingredients = lines.slice(0, Math.min(lines.length, 10));
         }
         if (instructions.length === 0) {
             instructions = lines.slice(Math.min(lines.length, 10));
@@ -130,12 +126,10 @@ async function parseStandardWebRecipe(url) {
         
         const $ = cheerio.load(response.data);
         
-        // Basic meta tag scraping for standard blogs/websites
         const title = $('meta[property="og:title"]').attr('content') || $('title').text() || "Web Recipe";
         const author = $('meta[name="author"]').attr('content') || "Blog Author";
         const image = $('meta[property="og:image"]').attr('content') || "";
 
-        // Extract ingredients and instructions using common CSS selectors
         let ingredients = [];
         $('[class*="ingredient"], [itemprop="recipeIngredient"]').each((i, el) => {
             const text = $(el).text().trim();
