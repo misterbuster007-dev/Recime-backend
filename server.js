@@ -27,44 +27,56 @@ app.get('/parse-recipe', async (req, res) => {
             return res.status(400).json({ error: "Invalid YouTube URL" });
         }
 
-        let transcriptText = "";
+        // 1. Try fetching YouTube Transcript
+        let contentSource = "";
         try {
             const transcriptItems = await YoutubeTranscript.fetchTranscript(videoId);
-            transcriptText = transcriptItems.map(item => item.text).join(' ');
+            contentSource = "Transcript: " + transcriptItems.map(item => item.text).join(' ');
         } catch (err) {
-            console.log("Transcript not available, using metadata fallback.");
+            console.log("Transcript not available, fetching video page description...");
         }
 
+        // 2. Fallback: Fetch YouTube page HTML to grab the description if transcript failed
         let videoTitle = "";
         let videoAuthor = "";
         try {
-            const oembedRes = await fetch(`https://www.youtube.com/oembed?url=${encodeURIComponent(videoUrl)}&format=json`);
-            if (oembedRes.ok) {
-                const oembedData = await oembedRes.json();
-                videoTitle = oembedData.title || "";
-                videoAuthor = oembedData.author_name || "";
+            const pageRes = await fetch(`https://www.youtube.com/watch?v=${videoId}`, {
+                headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+            });
+            const html = await pageRes.text();
+            
+            // Extract title from meta tags
+            const titleMatch = html.match(/<meta name="title" content="([^"]+)">/);
+            if (titleMatch) videoTitle = titleMatch[1];
+
+            // Extract description from meta tags if transcript was empty
+            if (!contentSource) {
+                const descMatch = html.match(/<meta name="description" content="([^"]+)">/);
+                if (descMatch) {
+                    contentSource = "Video Description: " + descMatch[1];
+                }
             }
-        } catch (e) {}
+        } catch (e) {
+            console.log("Web fallback failed:", e);
+        }
 
         const prompt = `You are an expert culinary data extractor and recipe parser. A user has shared a YouTube cooking video.
         Video Title: ${videoTitle}
-        Channel Name: ${videoAuthor}
-        Video Transcript / Content: ${transcriptText.slice(0, 15000)}
+        Video Content / Transcript / Description: ${contentSource.slice(0, 15000)}
 
         Task: 
-        1. Clean up the recipe title: Ignore clickbait phrases like "I spent 5 years perfecting", "2 Ingredient Recipes", or "Better than...". Provide a clean, direct, professional culinary name for the dish (e.g., "Yogurt Donuts" or "Peri Peri Chicken").
-        2. If it is a compilation video, pick the main or most prominent recipe featured.
-        3. Extract precise ingredients with exact measurements (cups, grams, tsp/tbsp) and step-by-step instructions based strictly on the video transcript text above. Do not hallucinate or guess generic recipes.
+        1. Clean up the recipe title: Ignore clickbait phrases like "I spent 5 years perfecting", "2 Ingredient Recipes", or "Better than...". Provide a clean, direct, professional culinary name for the dish (e.g., "Yogurt Donuts" or "2-Ingredient Yogurt Doughnuts").
+        2. Extract precise ingredients with exact measurements (cups, grams, tsp/tbsp) and step-by-step instructions based strictly on the text above. 
 
         Return strictly valid JSON matching this exact structure with no markdown formatting around it: 
         {
           "title": "Clean Dish Name", 
           "author": "${videoAuthor || 'YouTube Creator'}", 
-          "category": "Main Course", 
-          "prepTime": "20 mins", 
-          "cookTime": "30 mins", 
+          "category": "Baking", 
+          "prepTime": "15 mins", 
+          "cookTime": "20 mins", 
           "defaultServings": 4, 
-          "ingredients": [{"name": "Ingredient name", "amount": 1, "unit": "cup", "category": "Produce"}], 
+          "ingredients": [{"name": "Ingredient name", "amount": 1, "unit": "cup", "category": "Pantry & Grains"}], 
           "instructions": ["Step 1", "Step 2"]
         }`;
 
