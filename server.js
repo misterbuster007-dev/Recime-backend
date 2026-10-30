@@ -71,7 +71,9 @@ async function parseYouTubeRecipe(url) {
         let currentSection = 'general';
 
         for (const line of lines) {
-            const lower = String(line).toLowerCase(); // Safeguarded to prevent undefined toLowerCase errors
+            // FULLY SAFEGUARDED: prevents any undefined toLowerCase crashes
+            const lower = String(line || '').toLowerCase(); 
+            
             if (lower.includes('ingredient') || lower.includes('you will need')) {
                 currentSection = 'ingredients';
                 continue;
