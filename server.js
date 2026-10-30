@@ -6,16 +6,13 @@ const cheerio = require('cheerio');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middleware
 app.use(cors());
 app.use(express.json());
 
-// Health check route
 app.get('/', (req, res) => {
     res.json({ status: "Recime Backend is running successfully!" });
 });
 
-// Recipe parsing endpoint
 app.get('/parse-recipe', async (req, res) => {
     try {
         const targetUrl = req.query.url;
@@ -27,18 +24,14 @@ app.get('/parse-recipe', async (req, res) => {
 
         let parsedData;
 
-        // Route handling based on URL type
         if (targetUrl.includes('youtube.com') || targetUrl.includes('youtu.be')) {
             parsedData = await parseYouTubeRecipe(targetUrl);
         } else {
             parsedData = await parseStandardWebRecipe(targetUrl);
         }
 
-        // CRITICAL: Always normalize output into an array so multi-recipe 
-        // roundups and single recipes both return a consistent format for the app
-        const finalOutput = Array.isArray(parsedData) ? parsedData : [parsedData];
-
-        return res.json(finalOutput);
+        // Return the exact data format your original working version used
+        return res.json(parsedData);
 
     } catch (error) {
         console.error("Backend Parsing Error:", error);
@@ -50,117 +43,104 @@ app.get('/parse-recipe', async (req, res) => {
 // YOUTUBE RECIPE PARSER
 // ==========================================
 async function parseYouTubeRecipe(url) {
-    try {
-        const response = await axios.get(url, {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            }
-        });
-        
-        const $ = cheerio.load(response.data);
-        
-        const title = $('meta[property="og:title"]').attr('content') || "YouTube Recipe";
-        const author = $('meta[property="og:video:actor"], meta[name="author"]').attr('content') || "YouTube Creator";
-        const description = $('meta[property="og:description"]').attr('content') || "";
-        const image = $('meta[property="og:image"]').attr('content') || "";
+    const response = await axios.get(url, {
+        headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+    });
+    
+    const $ = cheerio.load(response.data);
+    const title = $('meta[property="og:title"]').attr('content') || "YouTube Recipe";
+    const author = $('meta[property="og:video:actor"], meta[name="author"]').attr('content') || "YouTube Creator";
+    const description = $('meta[property="og:description"]').attr('content') || "";
+    const image = $('meta[property="og:image"]').attr('content') || "";
 
-        const lines = description ? description.split('\n').map(line => line.trim()).filter(line => line.length > 0) : [];
-        
-        let ingredients = [];
-        let instructions = [];
-        let currentSection = 'general';
+    const lines = description ? description.split('\n').map(line => line ? line.trim() : '').filter(line => line.length > 0) : [];
+    
+    let ingredients = [];
+    let instructions = [];
+    let currentSection = 'general';
 
-        for (const line of lines) {
-            // FULLY SAFEGUARDED: prevents any undefined toLowerCase crashes
-            const lower = String(line || '').toLowerCase(); 
-            
-            if (lower.includes('ingredient') || lower.includes('you will need')) {
-                currentSection = 'ingredients';
-                continue;
-            } else if (lower.includes('instruction') || lower.includes('directions') || lower.includes('method') || lower.includes('steps')) {
-                currentSection = 'instructions';
-                continue;
-            }
-
-            if (currentSection === 'ingredients') {
-                ingredients.push(line);
-            } else if (currentSection === 'instructions') {
-                instructions.push(line);
-            }
+    for (const line of lines) {
+        const lower = String(line || '').toLowerCase();
+        if (lower.includes('ingredient') || lower.includes('you will need')) {
+            currentSection = 'ingredients';
+            continue;
+        } else if (lower.includes('instruction') || lower.includes('directions') || lower.includes('method') || lower.includes('steps')) {
+            currentSection = 'instructions';
+            continue;
         }
 
-        if (ingredients.length === 0) {
-            ingredients = lines.slice(0, Math.min(lines.length, 10));
+        if (currentSection === 'ingredients') {
+            ingredients.push(line);
+        } else if (currentSection === 'instructions') {
+            instructions.push(line);
         }
-        if (instructions.length === 0) {
-            instructions = lines.slice(Math.min(lines.length, 10));
-        }
-
-        return {
-            id: Date.now().toString(),
-            title: title,
-            author: author,
-            category: "YouTube",
-            prepTime: "15 mins",
-            cookTime: "20 mins",
-            defaultServings: 4,
-            ingredients: ingredients.length > 0 ? ingredients : ["Check video description for ingredients"],
-            instructions: instructions.length > 0 ? instructions : ["Watch video for instructions"],
-            image: image
-        };
-
-    } catch (error) {
-        console.error("YouTube Parsing Error:", error);
-        throw new Error("Could not extract recipe from YouTube URL.");
     }
+
+    if (ingredients.length === 0) ingredients = lines.slice(0, Math.min(lines.length, 10));
+    if (instructions.length === 0) instructions = lines.slice(Math.min(lines.length, 10));
+
+    return {
+        id: Date.now().toString(),
+        title,
+        author,
+        category: "YouTube",
+        prepTime: "15 mins",
+        cookTime: "20 mins",
+        defaultServings: 4,
+        ingredients: ingredients.length > 0 ? ingredients : ["Check video description for ingredients"],
+        instructions: instructions.length > 0 ? instructions : ["Watch video for instructions"],
+        image
+    };
 }
 
 // ==========================================
 // STANDARD WEBSITE RECIPE PARSER
 // ==========================================
 async function parseStandardWebRecipe(url) {
-    try {
-        const response = await axios.get(url, {
-            headers: {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-            }
-        });
-        
-        const $ = cheerio.load(response.data);
-        
-        const title = $('meta[property="og:title"]').attr('content') || $('title').text() || "Web Recipe";
-        const author = $('meta[name="author"]').attr('content') || "Blog Author";
-        const image = $('meta[property="og:image"]').attr('content') || "";
+    const response = await axios.get(url, {
+        headers: {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+    });
+    
+    const $ = cheerio.load(response.data);
+    
+    const title = $('meta[property="og:title"]').attr('content') || $('title').text() || "Web Recipe";
+    const author = $('meta[name="author"]').attr('content') || "Blog Author";
+    const image = $('meta[property="og:image"]').attr('content') || "";
 
-        let ingredients = [];
-        $('[class*="ingredient"], [itemprop="recipeIngredient"]').each((i, el) => {
-            const text = $(el).text().trim();
-            if (text) ingredients.push(text);
-        });
+    let ingredients = [];
+    $('[class*="ingredient"], [itemprop="recipeIngredient"], .wprm-recipe-ingredient').each((i, el) => {
+        const text = $(el).text();
+        if (text) {
+            const cleaned = text.trim();
+            if (cleaned) ingredients.push(cleaned);
+        }
+    });
 
-        let instructions = [];
-        $('[class*="instruction"], [class*="direction"], [itemprop="recipeInstructions"]').each((i, el) => {
-            const text = $(el).text().trim();
-            if (text) instructions.push(text);
-        });
+    let instructions = [];
+    $('[class*="instruction"], [class*="direction"], [itemprop="recipeInstructions"], .wprm-recipe-instruction').each((i, el) => {
+        const text = $(el).text();
+        if (text) {
+            const cleaned = text.trim();
+            if (cleaned) instructions.push(cleaned);
+        }
+    });
 
-        return {
-            id: Date.now().toString(),
-            title: title,
-            author: author,
-            category: "Main Course",
-            prepTime: "15 mins",
-            cookTime: "20 mins",
-            defaultServings: 4,
-            ingredients: ingredients.length > 0 ? ingredients : ["Ingredient data not automatically formatted"],
-            instructions: instructions.length > 0 ? instructions : ["Instruction data not automatically formatted"],
-            image: image
-        };
-
-    } catch (error) {
-        console.error("Web Scraping Error:", error);
-        throw new Error("Could not scrape recipe from website.");
-    }
+    return {
+        id: Date.now().toString(),
+        title,
+        author,
+        category: "Main Course",
+        prepTime: "15 mins",
+        cookTime: "20 mins",
+        defaultServings: 4,
+        ingredients: ingredients.length > 0 ? ingredients : ["Visit original website for full ingredient list"],
+        instructions: instructions.length > 0 ? instructions : ["Visit original website for step-by-step instructions"],
+        image
+    };
 }
 
 app.listen(PORT, () => {
